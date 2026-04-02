@@ -1,0 +1,35 @@
+scenario:
+  name: local-openai-compat
+  cluster:
+    accelerator_vendor: nvidia
+    accelerator_arch: b200
+    nodes: 1
+    accelerators_per_node: 8
+    interconnect: ethernet
+    ssh_user: ""
+    hosts: []
+    slurm_partition: gpu
+    slurm_account: ""
+  workload:
+    name: local-chat
+    model: meta-llama/Llama-3.1-8B-Instruct
+    backend: openai-compat
+    traffic_pattern: steady
+    prompt_tokens: 1024
+    output_tokens: 128
+    concurrency: 16
+    requests: 32
+    duration_s: 120
+    target_ttft_ms: 1500
+    target_p95_ms: 4000
+    endpoint: http://127.0.0.1:8000/v1
+    api_key: EMPTY
+  launch:
+    executor: local
+    model_cache_dir: ""
+    tensor_parallel: 1
+    pipeline_parallel: 1
+    extra_args: []
+    env: {}
+    nodes_per_replica: 1
+    replicas: 1

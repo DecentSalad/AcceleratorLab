@@ -1,0 +1,35 @@
+scenario:
+  name: slurm-llama70b-benchmark
+  cluster:
+    accelerator_vendor: amd
+    accelerator_arch: mi355x
+    nodes: 4
+    accelerators_per_node: 8
+    interconnect: infiniband
+    ssh_user: ""
+    hosts: []
+    slurm_partition: gpu
+    slurm_account: mylab
+  workload:
+    name: multi-node-chat
+    model: meta-llama/Llama-3.1-70B-Instruct
+    backend: vllm
+    traffic_pattern: steady
+    prompt_tokens: 2048
+    output_tokens: 256
+    concurrency: 64
+    requests: 64
+    duration_s: 300
+    target_ttft_ms: 1500
+    target_p95_ms: 5000
+    endpoint: http://127.0.0.1:8000/v1
+    api_key: EMPTY
+  launch:
+    executor: slurm
+    model_cache_dir: ""
+    tensor_parallel: 8
+    pipeline_parallel: 1
+    extra_args: []
+    env: {}
+    nodes_per_replica: 1
+    replicas: 1

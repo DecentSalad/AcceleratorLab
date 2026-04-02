@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+.build_venv/
+
+# PyInstaller
+*.spec.bak
+dist/
+build/
+
+# Benchmark outputs
+benchmark_result.json
+*.json
+!package.json
+
+# Project storage (user-local, not for repo)
+.scalelab_projects/
+
+# Slurm job scripts (generated at runtime)
+acceleratorlab_slurm_job.sh
+slurm-*.out
+
+# Environment / secrets — never commit these
+.env
+*.env
+scenario_*.yaml
+!examples/scenario_*.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Coverage / testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
