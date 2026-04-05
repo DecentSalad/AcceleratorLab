@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 import requests
 
 from scalelab.core.models import Scenario
+from scalelab.core.telemetry import TelemetryCollector
 
 
 # ---------------------------------------------------------------------------
@@ -175,21 +176,29 @@ def run_openai_compatible_benchmark(scenario: Scenario) -> Dict[str, Any]:
     deadline = time.perf_counter() + w.duration_s
     start_wall = time.perf_counter()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=w.concurrency) as pool:
-        pattern = w.traffic_pattern.lower()
-        if pattern == "burst":
-            results = _burst_requests(
-                pool, w.endpoint, w.model,
-                w.prompt_tokens, w.output_tokens, w.api_key,
-                w.requests, deadline,
-            )
-        else:
-            # "steady" is the default; unknown patterns fall back to steady
-            results = _steady_rate_requests(
-                pool, w.endpoint, w.model,
-                w.prompt_tokens, w.output_tokens, w.api_key,
-                w.requests, w.concurrency, deadline,
-            )
+    # Start hardware telemetry — runs in background for the full benchmark window
+    telemetry = TelemetryCollector(vendor=scenario.cluster.accelerator_vendor)
+    telemetry.start()
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=w.concurrency) as pool:
+            pattern = w.traffic_pattern.lower()
+            if pattern == "burst":
+                results = _burst_requests(
+                    pool, w.endpoint, w.model,
+                    w.prompt_tokens, w.output_tokens, w.api_key,
+                    w.requests, deadline,
+                )
+            else:
+                # "steady" is the default; unknown patterns fall back to steady
+                results = _steady_rate_requests(
+                    pool, w.endpoint, w.model,
+                    w.prompt_tokens, w.output_tokens, w.api_key,
+                    w.requests, w.concurrency, deadline,
+                )
+    finally:
+        # Always stop the collector — even if the benchmark raised an exception
+        hw = telemetry.stop()
 
     total_s   = max(0.001, time.perf_counter() - start_wall)
     oks       = [x for x in results if x["ok"]]
@@ -204,7 +213,7 @@ def run_openai_compatible_benchmark(scenario: Scenario) -> Dict[str, Any]:
     mean_lat    = statistics.mean(lats)
     tok_s       = float(sum(toks) / total_s)
 
-    return {
+    result = {
         "system":            f"{scenario.cluster.accelerator_vendor}-{scenario.cluster.accelerator_arch}",
         "model":             w.model,
         "backend":           w.backend,
@@ -220,3 +229,8 @@ def run_openai_compatible_benchmark(scenario: Scenario) -> Dict[str, Any]:
         "meets_slo":         (ttft <= w.target_ttft_ms and p95 <= w.target_p95_ms),
         "traffic_pattern":   w.traffic_pattern,
     }
+
+    # Merge telemetry metrics into the result dict
+    result.update(hw.to_dict())
+
+    return result
