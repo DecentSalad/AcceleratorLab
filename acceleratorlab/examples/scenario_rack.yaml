@@ -1,0 +1,64 @@
+# AcceleratorLab rack-scale scenario
+# 8-node AMD MI300X cluster, all nodes in the same NVLink/Infinity Fabric domain.
+# Runs Llama 3.1 70B with vLLM across the full rack via SSH executor.
+#
+# Run with:
+#   python -m scalelab.cli.run --scenario examples/scenario_rack.yaml --launch-servers
+
+scenario:
+  name: rack-llama70b-mi300x
+
+  cluster:
+    accelerator_vendor: amd
+    accelerator_arch: mi300x
+    nodes: 8
+    accelerators_per_node: 8
+    interconnect: infiniband
+    ssh_user: ubuntu
+    hosts:
+      - gpu-node-01
+      - gpu-node-02
+      - gpu-node-03
+      - gpu-node-04
+      - gpu-node-05
+      - gpu-node-06
+      - gpu-node-07
+      - gpu-node-08
+    slurm_partition: ""
+    slurm_account: ""
+
+    # Phase 5: topology metadata
+    topology:
+      rack_id: rack-07
+      switch_group: switch-A
+      nvlink_domain: domain-0
+      nodes_per_switch: 8
+      inter_node_bandwidth_gbps: 400.0
+
+  workload:
+    name: rack-chat
+    model: meta-llama/Llama-3.1-70B-Instruct
+    backend: vllm
+    traffic_pattern: steady
+    prompt_tokens: 2048
+    output_tokens: 256
+    concurrency: 128
+    requests: 500
+    duration_s: 300
+    target_ttft_ms: 1500
+    target_p95_ms: 5000
+    endpoint: http://gpu-node-01:8000/v1
+    api_key: EMPTY
+
+  launch:
+    executor: ssh
+    model_cache_dir: /mnt/models
+    tensor_parallel: 8
+    pipeline_parallel: 8
+    extra_args: []
+    env:
+      # SSH_KEY_FILE and SSH_OPTIONS are read by the orchestrator
+      SSH_KEY_FILE: /home/ubuntu/.ssh/id_rsa
+      SSH_OPTIONS: "StrictHostKeyChecking=no"
+    nodes_per_replica: 1
+    replicas: 1

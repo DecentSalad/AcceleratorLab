@@ -25,11 +25,12 @@ def _one_request(
 ) -> Dict[str, Any]:
     prompt = "hello " * max(1, prompt_tokens // 2)
     payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": output_tokens,
-        "stream": True,  # streaming required for real TTFT measurement
-    }
+    "model": model,
+    "messages": [{"role": "user", "content": prompt}],
+    "max_tokens": output_tokens,
+    "stream": True,
+    "stream_options": {"include_usage": True},
+}
     headers = {"Authorization": f"Bearer {api_key}"}
     t0 = time.perf_counter()
     ttft_ms: float | None = None
@@ -45,11 +46,17 @@ def _one_request(
         ) as r:
             if not r.ok:
                 elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                # Capture the error body so callers can surface the reason
+                try:
+                    error_body = r.text[:500]
+                except Exception:
+                    error_body = f"HTTP {r.status_code}"
                 return {
                     "ok": False,
                     "latency_ms": elapsed_ms,
                     "ttft_ms": elapsed_ms,
                     "generated_tokens": 0,
+                    "error": f"HTTP {r.status_code}: {error_body}",
                 }
 
             usage: Dict[str, Any] = {}
@@ -98,13 +105,14 @@ def _one_request(
                 "generated_tokens": generated_tokens,
             }
 
-    except Exception:
+    except Exception as exc:
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return {
             "ok": False,
             "latency_ms": elapsed_ms,
             "ttft_ms": elapsed_ms,
             "generated_tokens": 0,
+            "error": str(exc)[:300],
         }
 
 
@@ -228,6 +236,8 @@ def run_openai_compatible_benchmark(scenario: Scenario) -> Dict[str, Any]:
         "success_rate":      round(len(oks) / max(1, len(results)), 4),
         "meets_slo":         (ttft <= w.target_ttft_ms and p95 <= w.target_p95_ms),
         "traffic_pattern":   w.traffic_pattern,
+        # First error message from failed requests — helps diagnose connection issues
+        "first_error":       next((r.get("error") for r in results if not r["ok"] and r.get("error")), None),
     }
 
     # Merge telemetry metrics into the result dict

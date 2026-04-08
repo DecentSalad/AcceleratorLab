@@ -189,11 +189,10 @@ class MainWindow(QMainWindow):
         # Model picker
         mg = _group("AI Model")
         ml = mg.layout()
-        self._model_display = QLabel(self._scenario["workload"]["model"])
+        self._model_display = QLineEdit(self._scenario["workload"]["model"])
         self._model_display.setStyleSheet(
             "font-size:13px;color:#5b8af5;"
-            "font-family:'Cascadia Code','Consolas','Courier New',monospace;border:none;")
-        self._model_display.setWordWrap(True)
+            "font-family:'Cascadia Code','Consolas','Courier New',monospace;")
         btn_model = QPushButton("Browse models…"); btn_model.setObjectName("btn_accent")
         btn_model.clicked.connect(self._pick_model)
         self._backend_combo = _combo(
@@ -440,17 +439,60 @@ class MainWindow(QMainWindow):
     def _on_run_finished(self, result):
         self._run_btn.setEnabled(True)
         self._progress_lbl.setText("")
-        br = result.get("benchmark_result", {})
-        self._result_preview.setPlainText(json.dumps(result, indent=2))
-        rows = normalize_results([result])
-        self._history.extend(rows)
-        self._last_result = result
-        self._refresh_results_tab()
-        slo = "SLO MET" if br.get("meets_slo") else "SLO MISSED"
-        self.statusBar().showMessage(
-            f"Done  ·  {br.get('tok_s', 0):.0f} tok/s  ·  "
-            f"TTFT {br.get('ttft_ms', 0):.0f} ms  ·  {slo}")
-        self._tabs.setCurrentIndex(2)
+        try:
+            br = result.get("benchmark_result", {})
+
+            # Safely serialize — new fields (topology, telemetry) are all
+            # plain dicts/primitives so this should never fail, but guard anyway
+            try:
+                self._result_preview.setPlainText(json.dumps(result, indent=2))
+            except Exception as e:
+                self._result_preview.setPlainText(f"[Could not serialize result: {e}]")
+
+            rows = normalize_results([result])
+            self._history.extend(rows)
+            self._last_result = result
+
+            # Warn the user if the benchmark ran but no requests succeeded
+            # (most common cause of an empty-looking Results tab)
+            if rows and rows[0].get("tok_s", 0) == 0:
+                self.statusBar().showMessage(
+                    "⚠  Benchmark completed but tok/s = 0 — server may not have responded. "
+                    "Check your endpoint and API key on the Configure tab."
+                )
+                QMessageBox.warning(
+                    self, "No results",
+                    "The benchmark completed but all requests returned 0 tokens.\n\n"
+                    "Most likely causes:\n"
+                    "  • The inference server is not running\n"
+                    "  • The endpoint URL is incorrect\n"
+                    "  • The API key is wrong\n"
+                    "  • The model name doesn't match what the server has loaded\n\n"
+                    "Check the endpoint on the Configure tab and try again."
+                )
+
+            self._refresh_results_tab()
+
+            slo = "SLO MET" if br.get("meets_slo") else "SLO MISSED"
+            tok_s  = br.get("tok_s",   0) or 0
+            ttft   = br.get("ttft_ms", 0) or 0
+            if tok_s > 0:
+                self.statusBar().showMessage(
+                    f"Done  ·  {tok_s:.0f} tok/s  ·  "
+                    f"TTFT {ttft:.0f} ms  ·  {slo}"
+                )
+
+            self._tabs.setCurrentIndex(2)
+
+        except Exception as exc:
+            # Surface any unexpected error so it isn't silently swallowed
+            import traceback
+            detail = traceback.format_exc()
+            QMessageBox.critical(
+                self, "Results error",
+                f"An error occurred while displaying results:\n\n{exc}\n\n{detail}"
+            )
+            self.statusBar().showMessage(f"Display error: {str(exc)[:120]}")
 
     def _on_run_error(self, msg):
         self._run_btn.setEnabled(True)
@@ -461,9 +503,14 @@ class MainWindow(QMainWindow):
     # ── Tab 3: Results ───────────────────────────────────────────────
 
     def _build_results_tab(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
         w = QWidget()
         v = QVBoxLayout(w); v.setContentsMargins(20, 16, 20, 20); v.setSpacing(12)
 
+        # ── Row 1: software performance metrics ──────────────────────
         self._metric_row = QHBoxLayout(); self._metric_row.setSpacing(10)
         self._m_toks = _metric("—", "BEST TOK/S")
         self._m_ttft = _metric("—", "AVG TTFT ms")
@@ -473,89 +520,177 @@ class MainWindow(QMainWindow):
             self._metric_row.addWidget(m)
         v.addLayout(self._metric_row)
 
+        # ── Row 2: hardware telemetry metrics (Phase 1) ──────────────
+        self._telem_row = QHBoxLayout(); self._telem_row.setSpacing(10)
+        self._m_gpu   = _metric("—", "GPU UTIL %",     color="#5cc8fa")
+        self._m_power = _metric("—", "POWER MEAN W",   color="#f5a623")
+        self._m_vram  = _metric("—", "VRAM USED GB",   color="#a78bfa")
+        self._m_effic = _metric("—", "TOK/S PER WATT", color="#3ecf8e")
+        for m in [self._m_gpu, self._m_power, self._m_vram, self._m_effic]:
+            self._telem_row.addWidget(m)
+        v.addLayout(self._telem_row)
+
+        # ── Results table — expanded with telemetry columns ──────────
         self._table = QTableWidget()
-        self._table.setColumnCount(8)
-        self._table.setHorizontalHeaderLabels(
-            ["System","Model","Backend","Concurrency","tok/s","TTFT ms","p95 ms","SLO"])
+        self._table.setColumnCount(11)
+        self._table.setHorizontalHeaderLabels([
+            "System", "Model", "Backend", "Conc",
+            "tok/s", "TTFT ms", "p95 ms",
+            "GPU %", "Power W", "tok/s/W",
+            "SLO",
+        ])
         self._table.setAlternatingRowColors(True)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.setMaximumHeight(200)
+        self._table.setMinimumHeight(180)
+        self._table.setMaximumHeight(400)
         v.addWidget(self._table)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        self._chart_toks = ChartCanvas(5.5, 3.5)
-        self._chart_p95  = ChartCanvas(5.5, 3.5)
-        splitter.addWidget(self._chart_toks)
-        splitter.addWidget(self._chart_p95)
-        v.addWidget(splitter, 1)
+        # Two side-by-side charts — plain HBoxLayout so scroll area
+        # can respect the fixed minimum heights without QSplitter compressing them
+        top_charts = QHBoxLayout(); top_charts.setSpacing(10)
+        self._chart_toks = ChartCanvas(5.5, 5.0)
+        self._chart_p95  = ChartCanvas(5.5, 5.0)
+        self._chart_toks.setMinimumHeight(380)
+        self._chart_p95.setMinimumHeight(380)
+        top_charts.addWidget(self._chart_toks)
+        top_charts.addWidget(self._chart_p95)
+        v.addLayout(top_charts)
 
-        self._chart_ttft = ChartCanvas(12, 3)
+        self._chart_ttft = ChartCanvas(12, 4)
+        self._chart_ttft.setMinimumHeight(300)
         v.addWidget(self._chart_ttft)
-        return w
+        v.addStretch()
+
+        scroll.setWidget(w)
+        return scroll
 
     def _refresh_results_tab(self):
         rows = self._history
-        if not rows: return
-        import statistics
-        toks  = [r["tok_s"]    for r in rows]
-        ttfts = [r["ttft_ms"]  for r in rows]
-        p95s  = [r["p95_ms"]   for r in rows]
-        slos  = [r["meets_slo"] for r in rows]
+        if not rows:
+            return
 
+        import statistics
+
+        toks = [r.get("tok_s",   0) or 0 for r in rows]
+        ttfts = [r.get("ttft_ms", 0) or 0 for r in rows]
+        p95s  = [r.get("p95_ms",  0) or 0 for r in rows]
+        slos  = [r.get("meets_slo", False) for r in rows]
+
+        # ── Software metric cards ──────────────────────────────────────
         best_c = "#3ecf8e" if max(toks) > 0 else "#d8dce8"
         self._m_toks.findChildren(QLabel)[0].setText(f"{max(toks):,.0f}")
         self._m_toks.findChildren(QLabel)[0].setStyleSheet(
             f"font-size:22px;font-weight:300;color:{best_c};border:none;")
+        nz_ttfts = [t for t in ttfts if t > 0]
+        nz_p95s  = [p for p in p95s  if p > 0]
         self._m_ttft.findChildren(QLabel)[0].setText(
-            f"{statistics.mean(ttfts):,.0f}")
+            f"{statistics.mean(nz_ttfts):,.0f}" if nz_ttfts else "—")
         self._m_p95.findChildren(QLabel)[0].setText(
-            f"{statistics.mean(p95s):,.0f}")
+            f"{statistics.mean(nz_p95s):,.0f}" if nz_p95s else "—")
         rate = sum(slos) / max(len(slos), 1) * 100
         sc = "#3ecf8e" if rate >= 95 else "#f5a623" if rate >= 70 else "#e05c5c"
         self._m_slo.findChildren(QLabel)[0].setText(f"{rate:.0f}%")
         self._m_slo.findChildren(QLabel)[0].setStyleSheet(
             f"font-size:22px;font-weight:300;color:{sc};border:none;")
 
+        # ── Telemetry metric cards (Phase 1) ──────────────────────────
+        telem_rows = [r for r in rows if r.get("telemetry_available")]
+        if telem_rows:
+            gpu_utils = [r.get("gpu_util_mean_pct", 0) or 0 for r in telem_rows]
+            powers    = [r.get("power_mean_w",      0) or 0 for r in telem_rows]
+            vrams     = [r.get("vram_used_mean_gb", 0) or 0 for r in telem_rows]
+            effics    = [r.get("tok_s_per_watt",    0) or 0 for r in telem_rows]
+            self._m_gpu.findChildren(QLabel)[0].setText(
+                f"{statistics.mean(gpu_utils):.1f}%")
+            self._m_power.findChildren(QLabel)[0].setText(
+                f"{statistics.mean(powers):,.0f}")
+            self._m_vram.findChildren(QLabel)[0].setText(
+                f"{statistics.mean(vrams):.1f}")
+            self._m_effic.findChildren(QLabel)[0].setText(
+                f"{max(effics):.4f}" if max(effics) > 0 else "—")
+        else:
+            for card in [self._m_gpu, self._m_power, self._m_vram, self._m_effic]:
+                card.findChildren(QLabel)[0].setText("—")
+
+        # ── Table ──────────────────────────────────────────────────────
         self._table.setRowCount(0)
         for r in rows:
-            row = self._table.rowCount(); self._table.insertRow(row)
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+
+            model_short = r.get("model", "")
+            if "/" in model_short:
+                model_short = model_short.split("/")[-1]
+
+            tok_s_v = r.get("tok_s",   0) or 0
+            ttft_v  = r.get("ttft_ms", 0) or 0
+            p95_v   = r.get("p95_ms",  0) or 0
+            has_hw  = r.get("telemetry_available", False)
+            gpu_str   = f"{r.get('gpu_util_mean_pct',0):.0f}%"   if has_hw else "—"
+            power_str = f"{r.get('power_mean_w',0):,.0f}"         if has_hw else "—"
+            eff_v     = r.get("tok_s_per_watt", 0) or 0
+            effic_str = f"{eff_v:.4f}" if has_hw and eff_v > 0   else "—"
+            slo_str   = "✓" if r.get("meets_slo") else "✗"
+
             for col, val in enumerate([
-                r["system"], r["model"], r["backend"],
-                str(r["concurrency"]),
-                f"{r['tok_s']:.0f}", f"{r['ttft_ms']:.0f}",
-                f"{r['p95_ms']:.0f}",
-                "✓" if r["meets_slo"] else "✗",
+                r.get("system",      "—"),
+                model_short          or "—",
+                r.get("backend",     "—"),
+                str(r.get("concurrency", "—")),
+                f"{tok_s_v:.0f}" if tok_s_v > 0 else "—",
+                f"{ttft_v:.0f}"  if ttft_v  > 0 else "—",
+                f"{p95_v:.0f}"   if p95_v   > 0 else "—",
+                gpu_str,
+                power_str,
+                effic_str,
+                slo_str,
             ]):
                 item = QTableWidgetItem(val)
-                if col == 7:
+                if col == 10:
                     from PyQt6.QtGui import QColor
                     item.setForeground(
                         QColor("#3ecf8e" if val == "✓" else "#e05c5c"))
                 self._table.setItem(row, col, item)
+
         self._table.resizeColumnsToContents()
 
+        # ── Charts ─────────────────────────────────────────────────────
         by_system: dict = {}
         for r in rows:
-            s = r["system"]
-            by_system.setdefault(s, {"toks":[], "p95s":[], "ttfts":[], "concs":[]})
-            by_system[s]["toks"].append(r["tok_s"])
-            by_system[s]["p95s"].append(r["p95_ms"])
-            by_system[s]["ttfts"].append(r["ttft_ms"])
-            by_system[s]["concs"].append(r["concurrency"])
+            s = r.get("system", "unknown")
+            by_system.setdefault(s, {"toks": [], "p95s": [], "ttfts": [], "concs": []})
+            by_system[s]["toks"].append(r.get("tok_s",   0) or 0)
+            by_system[s]["p95s"].append(r.get("p95_ms",  0) or 0)
+            by_system[s]["ttfts"].append(r.get("ttft_ms",0) or 0)
+            by_system[s]["concs"].append(r.get("concurrency", 1))
 
-        systems    = list(by_system.keys())
-        best_toks  = [max(by_system[s]["toks"]) for s in systems]
-        self._chart_toks.bar(systems, best_toks, "Peak throughput by system", "Tokens / sec")
+        systems   = list(by_system.keys())
+        best_toks = [max(by_system[s]["toks"]) for s in systems]
 
-        p95_series = {s: (by_system[s]["concs"], by_system[s]["p95s"]) for s in systems}
-        self._chart_p95.lines(p95_series, "p95 latency by concurrency",
-                               "Concurrency", "p95 ms")
+        if any(v > 0 for v in best_toks):
+            self._chart_toks.bar(
+                systems, best_toks, "Peak throughput by system", "Tokens / sec")
+        else:
+            self._chart_toks.clear()
+            self._chart_toks.ax.text(
+                0.5, 0.5, "No data — server returned 0 tokens\nCheck endpoint on Configure tab",
+                transform=self._chart_toks.ax.transAxes,
+                ha="center", va="center", color="#9aa0bc", fontsize=9)
+            self._chart_toks.draw()
+
+        p95_series = {s: (by_system[s]["concs"], by_system[s]["p95s"])
+                      for s in systems}
+        self._chart_p95.lines(
+            p95_series, "p95 latency by concurrency", "Concurrency", "p95 ms")
 
         mean_ttfts = [
-            sum(by_system[s]["ttfts"]) / len(by_system[s]["ttfts"]) for s in systems]
-        self._chart_ttft.hbar(systems, mean_ttfts, "Mean TTFT by system", "TTFT ms")
+            sum(by_system[s]["ttfts"]) / max(len(by_system[s]["ttfts"]), 1)
+            for s in systems
+        ]
+        self._chart_ttft.hbar(
+            systems, mean_ttfts, "Mean TTFT by system", "TTFT ms")
 
     # ── Tab 4: Export ─────────────────────────────────────────────────
 
